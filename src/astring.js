@@ -1090,6 +1090,628 @@ DEPRECATED: Alternate export of `GENERATOR`.
 */
 export const baseGenerator = GENERATOR
 
+// ============================================================================
+// Syntax profile
+//
+// A syntax profile restricts the generated code to a target ECMAScript edition.
+// It checks every AST node, operator and contextual rule (such as where `await`
+// and `yield` are allowed) before any code is written. Unknown node types are
+// rejected by default. Nothing is transpiled: if the AST uses syntax newer than
+// the target, an error is thrown.
+// ============================================================================
+
+// Minimum ECMAScript edition (5..16) at which each ESTree node type was introduced.
+export const NODE_VERSIONS = {
+  // ES5
+  Program: 5,
+  ExpressionStatement: 5,
+  BlockStatement: 5,
+  EmptyStatement: 5,
+  DebuggerStatement: 5,
+  Identifier: 5,
+  ThisExpression: 5,
+  Literal: 5,
+  RegExpLiteral: 5,
+  ArrayExpression: 5,
+  ObjectExpression: 5,
+  Property: 5,
+  FunctionDeclaration: 5,
+  FunctionExpression: 5,
+  VariableDeclaration: 5,
+  VariableDeclarator: 5,
+  BinaryExpression: 5,
+  UnaryExpression: 5,
+  UpdateExpression: 5,
+  LogicalExpression: 5,
+  ConditionalExpression: 5,
+  AssignmentExpression: 5,
+  SequenceExpression: 5,
+  MemberExpression: 5,
+  CallExpression: 5,
+  NewExpression: 5,
+  ReturnStatement: 5,
+  ThrowStatement: 5,
+  TryStatement: 5,
+  SwitchStatement: 5,
+  BreakStatement: 5,
+  ContinueStatement: 5,
+  LabeledStatement: 5,
+  IfStatement: 5,
+  WhileStatement: 5,
+  DoWhileStatement: 5,
+  ForStatement: 5,
+  ForInStatement: 5,
+  WithStatement: 5,
+  SwitchCase: 5,
+  CatchClause: 5,
+  // ES2015
+  ArrowFunctionExpression: 6,
+  ClassDeclaration: 6,
+  ClassExpression: 6,
+  ClassBody: 6,
+  MethodDefinition: 6,
+  TemplateLiteral: 6,
+  TemplateElement: 6,
+  TaggedTemplateExpression: 6,
+  SpreadElement: 6,
+  RestElement: 6,
+  AssignmentPattern: 6,
+  ObjectPattern: 6,
+  ArrayPattern: 6,
+  ForOfStatement: 6,
+  YieldExpression: 6,
+  ImportDeclaration: 6,
+  ImportSpecifier: 6,
+  ImportDefaultSpecifier: 6,
+  ImportNamespaceSpecifier: 6,
+  ExportNamedDeclaration: 6,
+  ExportSpecifier: 6,
+  ExportDefaultDeclaration: 6,
+  ExportAllDeclaration: 6,
+  Super: 6,
+  MetaProperty: 6,
+  // ES2017
+  AwaitExpression: 8,
+  // ES2020
+  ChainExpression: 11,
+  ImportExpression: 11,
+  // ES2022
+  PropertyDefinition: 13,
+  PrivateIdentifier: 13,
+  StaticBlock: 13,
+  // Stage 3 proposals (ES2025)
+  ImportAttribute: 16,
+}
+
+// Minimum ECMAScript edition at which each operator was introduced.
+export const OPERATOR_VERSIONS = {
+  '**': 7,
+  '**=': 7,
+  '??': 11,
+  '&&=': 12,
+  '||=': 12,
+  '??=': 12,
+}
+
+// Minimum ECMAScript edition at which each regular expression flag was introduced.
+export const REGEXP_FLAG_VERSIONS = {
+  y: 6, // sticky
+  u: 6, // unicode
+  s: 9, // dotAll
+  d: 13, // indices
+  v: 15, // unicode sets
+}
+
+// Child keys of each node type, used to walk the AST.
+const NODE_CHILD_KEYS = {
+  Program: ['body'],
+  ExpressionStatement: ['expression'],
+  BlockStatement: ['body'],
+  StaticBlock: ['body'],
+  EmptyStatement: [],
+  DebuggerStatement: [],
+  IfStatement: ['test', 'consequent', 'alternate'],
+  LabeledStatement: ['label', 'body'],
+  BreakStatement: ['label'],
+  ContinueStatement: ['label'],
+  WithStatement: ['object', 'body'],
+  SwitchStatement: ['discriminant', 'cases'],
+  SwitchCase: ['test', 'consequent'],
+  ReturnStatement: ['argument'],
+  ThrowStatement: ['argument'],
+  TryStatement: ['block', 'handler', 'finalizer'],
+  CatchClause: ['param', 'body'],
+  WhileStatement: ['test', 'body'],
+  DoWhileStatement: ['body', 'test'],
+  ForStatement: ['init', 'test', 'update', 'body'],
+  ForInStatement: ['left', 'right', 'body'],
+  ForOfStatement: ['left', 'right', 'body'],
+  FunctionDeclaration: ['id', 'params', 'body'],
+  FunctionExpression: ['id', 'params', 'body'],
+  VariableDeclaration: ['declarations'],
+  VariableDeclarator: ['id', 'init'],
+  ClassDeclaration: ['id', 'superClass', 'body'],
+  ClassExpression: ['id', 'superClass', 'body'],
+  ClassBody: ['body'],
+  MethodDefinition: ['key', 'value'],
+  PropertyDefinition: ['key', 'value'],
+  ImportDeclaration: ['specifiers', 'source', 'attributes'],
+  ImportSpecifier: ['imported', 'local'],
+  ImportDefaultSpecifier: ['local'],
+  ImportNamespaceSpecifier: ['local'],
+  ImportAttribute: ['key', 'value'],
+  ImportExpression: ['source'],
+  ExportNamedDeclaration: ['declaration', 'specifiers', 'source', 'attributes'],
+  ExportSpecifier: ['local', 'exported'],
+  ExportDefaultDeclaration: ['declaration'],
+  ExportAllDeclaration: ['exported', 'source', 'attributes'],
+  ArrowFunctionExpression: ['params', 'body'],
+  ThisExpression: [],
+  Super: [],
+  RestElement: ['argument'],
+  SpreadElement: ['argument'],
+  YieldExpression: ['argument'],
+  AwaitExpression: ['argument'],
+  TemplateLiteral: ['quasis', 'expressions'],
+  TemplateElement: [],
+  TaggedTemplateExpression: ['tag', 'quasi'],
+  ArrayExpression: ['elements'],
+  ArrayPattern: ['elements'],
+  ObjectExpression: ['properties'],
+  ObjectPattern: ['properties'],
+  Property: ['key', 'value'],
+  SequenceExpression: ['expressions'],
+  UnaryExpression: ['argument'],
+  UpdateExpression: ['argument'],
+  BinaryExpression: ['left', 'right'],
+  LogicalExpression: ['left', 'right'],
+  ConditionalExpression: ['test', 'consequent', 'alternate'],
+  AssignmentExpression: ['left', 'right'],
+  AssignmentPattern: ['left', 'right'],
+  NewExpression: ['callee', 'arguments'],
+  CallExpression: ['callee', 'arguments'],
+  ChainExpression: ['expression'],
+  MemberExpression: ['object', 'property'],
+  MetaProperty: ['meta', 'property'],
+  Identifier: [],
+  PrivateIdentifier: [],
+  Literal: [],
+  RegExpLiteral: [],
+}
+
+const SCOPE_FUNCTION = 'function'
+const SCOPE_CLASS = 'class'
+const SCOPE_METHOD = 'method'
+const SCOPE_STATIC_BLOCK = 'static-block'
+
+function isNode(value) {
+  return value != null && typeof value.type === 'string'
+}
+
+function editionLabel(edition) {
+  return edition >= 6 ? `ES${2009 + edition}` : 'ES5'
+}
+
+function nodeLocation(node) {
+  if (node.loc != null && node.loc.start != null) {
+    const { line, column } = node.loc.start
+    return `line ${line}, column ${column}`
+  }
+  if (node.start != null) {
+    return `offset ${node.start}`
+  }
+  return 'unknown location'
+}
+
+function nearestScope(scope, kinds) {
+  const wanted = Array.isArray(kinds) ? kinds : [kinds]
+  for (let i = scope.length - 1; i >= 0; i--) {
+    if (wanted.indexOf(scope[i].kind) !== -1) {
+      return scope[i]
+    }
+  }
+  return null
+}
+
+function reject(violations, node, message) {
+  violations.push({ node, message: `${message} at ${nodeLocation(node)}` })
+}
+
+// Checks node-specific and contextual rules for `node`.
+function checkNodeSyntax(node, parent, ctx) {
+  const { violations, scope, target, sourceType } = ctx
+  switch (node.type) {
+    case 'AwaitExpression': {
+      const fn = nearestScope(scope, SCOPE_FUNCTION)
+      if (fn != null) {
+        if (!fn.async) {
+          reject(violations, node, '"await" is only allowed in async functions')
+        }
+      } else if (sourceType !== 'module' || target < 13) {
+        reject(
+          violations,
+          node,
+          '"await" at top level requires a module target of at least ES2022',
+        )
+      }
+      break
+    }
+    case 'YieldExpression': {
+      const fn = nearestScope(scope, SCOPE_FUNCTION)
+      if (fn == null || !fn.generator) {
+        reject(
+          violations,
+          node,
+          '"yield" is only allowed in generator functions',
+        )
+      }
+      break
+    }
+    case 'ForOfStatement': {
+      if (node.await) {
+        const fn = nearestScope(scope, SCOPE_FUNCTION)
+        if (fn != null) {
+          if (!fn.async) {
+            reject(
+              violations,
+              node,
+              '"for await" is only allowed in async functions',
+            )
+          }
+        } else if (sourceType !== 'module' || target < 13) {
+          reject(
+            violations,
+            node,
+            '"for await" at top level requires a module target of at least ES2022',
+          )
+        }
+      }
+      break
+    }
+    case 'Super': {
+      if (nearestScope(scope, [SCOPE_CLASS, SCOPE_METHOD]) == null) {
+        reject(
+          violations,
+          node,
+          '"super" is only allowed in classes and object methods',
+        )
+      }
+      break
+    }
+    case 'PrivateIdentifier': {
+      if (nearestScope(scope, SCOPE_CLASS) == null) {
+        reject(
+          violations,
+          node,
+          'Private identifiers are only allowed in class bodies',
+        )
+      }
+      break
+    }
+    case 'MetaProperty': {
+      if (node.meta.name === 'import') {
+        if (sourceType !== 'module' || target < 11) {
+          reject(
+            violations,
+            node,
+            '"import.meta" requires a module target of at least ES2020',
+          )
+        }
+      } else if (node.meta.name === 'new') {
+        if (nearestScope(scope, [SCOPE_FUNCTION, SCOPE_STATIC_BLOCK]) == null) {
+          reject(
+            violations,
+            node,
+            '"new.target" is only allowed in functions and class static blocks',
+          )
+        }
+      }
+      break
+    }
+    case 'TryStatement': {
+      if (node.handler == null && target < 10) {
+        reject(violations, node, 'Optional catch binding requires ES2019')
+      }
+      break
+    }
+    case 'MemberExpression':
+    case 'CallExpression': {
+      if (node.optional && target < 11) {
+        reject(violations, node, 'Optional chaining requires ES2020')
+      }
+      break
+    }
+    case 'ChainExpression': {
+      if (target < 11) {
+        reject(violations, node, 'Optional chaining requires ES2020')
+      }
+      break
+    }
+    case 'ImportExpression': {
+      if (target < 11) {
+        reject(violations, node, '"import()" requires ES2020')
+      }
+      break
+    }
+    case 'Literal': {
+      if (node.bigint != null && target < 11) {
+        reject(violations, node, 'BigInt literals require ES2020')
+      }
+      if (node.regex != null) {
+        const flags = node.regex.flags || ''
+        for (let i = 0; i < flags.length; i++) {
+          const flag = flags[i]
+          const version = REGEXP_FLAG_VERSIONS[flag]
+          if (version != null && version > target) {
+            reject(
+              violations,
+              node,
+              `RegExp flag "${flag}" requires ${editionLabel(version)}`,
+            )
+          }
+        }
+      }
+      break
+    }
+    case 'TemplateElement': {
+      if (node.value != null && node.value.cooked == null && target < 9) {
+        reject(
+          violations,
+          node,
+          'Illegal escape in tagged templates requires ES2018',
+        )
+      }
+      break
+    }
+    case 'SpreadElement':
+    case 'RestElement': {
+      if (
+        parent != null &&
+        (parent.type === 'ObjectExpression' || parent.type === 'ObjectPattern')
+      ) {
+        if (target < 9) {
+          reject(
+            violations,
+            node,
+            `Object ${
+              node.type === 'SpreadElement' ? 'spread' : 'rest'
+            } requires ES2018`,
+          )
+        }
+      }
+      break
+    }
+    case 'Property': {
+      if (
+        (node.shorthand ||
+          node.method ||
+          node.computed ||
+          (node.kind != null && node.kind !== 'init')) &&
+        target < 6
+      ) {
+        reject(
+          violations,
+          node,
+          `Object property "${node.kind || 'init'}" requires ES2015`,
+        )
+      }
+      break
+    }
+    case 'MethodDefinition': {
+      if (target < 6) {
+        reject(violations, node, 'Class methods require ES2015')
+      }
+      break
+    }
+    case 'VariableDeclaration': {
+      if ((node.kind === 'let' || node.kind === 'const') && target < 6) {
+        reject(violations, node, `"${node.kind}" declarations require ES2015`)
+      }
+      break
+    }
+    case 'ArrowFunctionExpression': {
+      if (node.async && target < 8) {
+        reject(violations, node, 'Async functions require ES2017')
+      }
+      break
+    }
+    case 'FunctionDeclaration':
+    case 'FunctionExpression': {
+      if (node.async && target < 8) {
+        reject(violations, node, 'Async functions require ES2017')
+      }
+      if (node.generator && target < 6) {
+        reject(violations, node, 'Generators require ES2015')
+      }
+      break
+    }
+    case 'ExportAllDeclaration': {
+      if (node.exported != null && target < 11) {
+        reject(violations, node, '"export * as ns" requires ES2020')
+      }
+      break
+    }
+    case 'AssignmentExpression':
+    case 'BinaryExpression':
+    case 'LogicalExpression': {
+      const version = OPERATOR_VERSIONS[node.operator]
+      if (version != null && version > target) {
+        reject(
+          violations,
+          node,
+          `Operator "${node.operator}" requires ${editionLabel(version)}`,
+        )
+      }
+      break
+    }
+    default:
+      break
+  }
+}
+
+function pushScope(node, scope) {
+  switch (node.type) {
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+      scope.push({
+        kind: SCOPE_FUNCTION,
+        async: !!node.async,
+        generator: !!node.generator,
+      })
+      return true
+    case 'ArrowFunctionExpression':
+      scope.push({
+        kind: SCOPE_FUNCTION,
+        async: !!node.async,
+        generator: false,
+      })
+      return true
+    case 'ClassDeclaration':
+    case 'ClassExpression':
+      scope.push({ kind: SCOPE_CLASS })
+      return true
+    case 'MethodDefinition':
+      scope.push({ kind: SCOPE_METHOD })
+      return true
+    case 'Property':
+      if (node.method || (node.kind != null && node.kind !== 'init')) {
+        scope.push({ kind: SCOPE_METHOD })
+        return true
+      }
+      return false
+    case 'StaticBlock':
+      scope.push({ kind: SCOPE_STATIC_BLOCK })
+      return true
+    default:
+      return false
+  }
+}
+
+const NON_CHILD_KEYS = [
+  'type',
+  'loc',
+  'start',
+  'end',
+  'range',
+  'comments',
+  'leadingComments',
+  'trailingComments',
+]
+
+function walkChild(value, parent, ctx) {
+  if (value == null) return
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      walkChild(value[i], parent, ctx)
+    }
+  } else if (isNode(value)) {
+    walk(value, parent, ctx)
+  }
+}
+
+function walk(node, parent, ctx) {
+  if (!isNode(node)) return
+  const { violations, scope, target } = ctx
+  const pushed = pushScope(node, scope)
+  // Node type version check
+  const minVersion = NODE_VERSIONS[node.type]
+  if (minVersion == null) {
+    reject(
+      violations,
+      node,
+      `Unknown node type "${node.type}" is not covered by the syntax profile`,
+    )
+  } else if (minVersion > target) {
+    reject(
+      violations,
+      node,
+      `Node type "${node.type}" requires ${editionLabel(minVersion)}`,
+    )
+  }
+  checkNodeSyntax(node, parent, ctx)
+  // Walk children
+  const keys = NODE_CHILD_KEYS[node.type]
+  if (keys != null) {
+    for (let i = 0; i < keys.length; i++) {
+      walkChild(node[keys[i]], node, ctx)
+    }
+  } else {
+    // Unknown node: traverse all properties that look like nodes
+    for (const key of Object.keys(node)) {
+      if (NON_CHILD_KEYS.indexOf(key) !== -1) continue
+      walkChild(node[key], node, ctx)
+    }
+  }
+  if (pushed) scope.pop()
+}
+
+// Normalizes a `target` option into an ECMAScript edition number (5..16).
+function getTargetEdition(options) {
+  if (options == null) return null
+  let target = options.target != null ? options.target : options.ecmaVersion
+  if (target == null) return null
+  if (typeof target !== 'number' || !Number.isFinite(target)) {
+    throw new Error(`Invalid target: expected a number, got ${typeof target}`)
+  }
+  if (target >= 2009) {
+    target = target - 2009
+  }
+  if (target < 5 || target > 16) {
+    throw new Error(
+      `Unsupported target: ${
+        options.target != null ? options.target : options.ecmaVersion
+      }. Supported editions are 5..16 (ES2009..ES2025).`,
+    )
+  }
+  return target
+}
+
+// Returns the list of syntax profile violations for the provided AST node.
+export function checkSyntaxProfile(node, options) {
+  const target = getTargetEdition(options)
+  const ctx = {
+    target,
+    sourceType:
+      options != null && options.sourceType != null
+        ? options.sourceType
+        : 'script',
+    violations: [],
+    scope: [],
+  }
+  walk(node, null, ctx)
+  return ctx.violations
+}
+
+// Error thrown when the AST does not satisfy the target syntax profile.
+export class ProfileError extends Error {
+  constructor(violations) {
+    super(violations.map((violation) => violation.message).join('\n'))
+    this.name = 'ProfileError'
+    this.violations = violations
+  }
+}
+
+// Verifies that the generated output parses with an independent parser at the
+// target edition. The parser must expose an acorn-compatible `parse(code, options)`
+// method. Does nothing if no parser is provided.
+function verifyOutput(output, options) {
+  const parser = options.parser
+  if (parser == null || typeof parser.parse !== 'function') return
+  const target = getTargetEdition(options)
+  try {
+    parser.parse(output, {
+      ecmaVersion: target,
+      sourceType: options.sourceType != null ? options.sourceType : 'script',
+    })
+  } catch (error) {
+    throw new Error(
+      `Generated output failed to parse as ${editionLabel(target)}: ${
+        error.message
+      }`,
+    )
+  }
+}
+
 class State {
   constructor(options) {
     const setup = options == null ? EMPTY_OBJECT : options
@@ -1217,9 +1839,31 @@ export function generate(node, options) {
   - `output`: output stream to write the rendered code to (defaults to `null`)
   - `generator`: custom code generator (defaults to `GENERATOR`)
   - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+  - `target`: target ECMAScript edition (5..16) or year (2009..2025). When set, the
+    AST is checked against the corresponding syntax profile before any code is
+    written: newer syntax, illegal contextual syntax (such as `await` outside an
+    async function) and unknown node types are rejected (defaults to `null`)
+  - `ecmaVersion`: alias for `target`
+  - `sourceType`: source type of the target, `"script"` or `"module"` (defaults to `"script"`)
+  - `parser`: independent parser used to verify the generated output parses at the
+    target edition. Must expose an acorn-compatible `parse(code, options)` method
+    (defaults to `null`)
   */
   const state = new State(options)
+  const target = getTargetEdition(options)
+  if (target != null) {
+    // Check the whole AST against the profile before writing anything
+    const violations = checkSyntaxProfile(node, options)
+    if (violations.length > 0) {
+      throw new ProfileError(violations)
+    }
+  }
   // Travel through the AST node and generate the code
   state.generator[node.type](node, state)
-  return state.output
+  const output = state.output
+  if (target != null && options != null && options.output == null) {
+    // Verify the generated output parses at the target edition
+    verifyOutput(output, options)
+  }
+  return output
 }

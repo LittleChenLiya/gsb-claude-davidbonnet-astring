@@ -87,6 +87,73 @@ The `options` are:
 - `generator`: custom code generator (defaults to `GENERATOR`)
 - `sourceMap`: [source map generator](https://github.com/mozilla/source-map#sourcemapgenerator) (defaults to `null`)
 - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+- `target`: target ECMAScript edition (5..16) or year (2009..2025). When set, the AST is checked against the corresponding [syntax profile](#syntax-profile) before any code is written: newer syntax, illegal contextual syntax (such as `await` outside an async function) and unknown node types are rejected (defaults to `null`)
+- `ecmaVersion`: alias for `target`
+- `sourceType`: source type of the target, `"script"` or `"module"` (defaults to `"script"`)
+- `parser`: independent parser used to verify the generated output parses at the target edition. Must expose an acorn-compatible `parse(code, options)` method (defaults to `null`)
+
+### Syntax profile
+
+When a `target` is provided, Astring checks the whole AST against the corresponding syntax profile before writing anything. Nothing is transpiled: if the AST uses syntax newer than the target, or syntax in an illegal context, a `ProfileError` is thrown and no code is written. Unknown node types (extensions not covered by the generator) are rejected by default, and the error includes the source location of the offending node.
+
+```javascript
+import { generate, ProfileError } from 'astring'
+import * as acorn from 'acorn'
+
+const ast = acorn.parse('const x = a?.b;', { ecmaVersion: 2020 })
+
+try {
+  generate(ast, { target: 2019 })
+} catch (error) {
+  console.log(error.name) // "ProfileError"
+  console.log(error.message) // 'Node type "ChainExpression" requires ES2020 ...'
+}
+
+// The generated output can be verified with an independent parser:
+const code = generate(ast, { target: 2020, parser: acorn })
+```
+
+The minimum ECMAScript edition of each node type and operator is documented in the [version table](#version-table) below. The profile only covers the syntax listed in this documentation.
+
+### Version table
+
+Minimum ECMAScript edition at which each node type is supported:
+
+| Node type                                                          | Minimum version |
+| :----------------------------------------------------------------- | :-------------- |
+| `Program`, `ExpressionStatement`, `BlockStatement`, `EmptyStatement`, `DebuggerStatement`, `Identifier`, `Literal`, `RegExpLiteral`, `ArrayExpression`, `ObjectExpression`, `Property`, `FunctionDeclaration`, `FunctionExpression`, `VariableDeclaration`, `VariableDeclarator`, `BinaryExpression`, `UnaryExpression`, `UpdateExpression`, `LogicalExpression`, `ConditionalExpression`, `AssignmentExpression`, `SequenceExpression`, `MemberExpression`, `CallExpression`, `NewExpression`, `ReturnStatement`, `ThrowStatement`, `TryStatement`, `SwitchStatement`, `BreakStatement`, `ContinueStatement`, `LabeledStatement`, `IfStatement`, `WhileStatement`, `DoWhileStatement`, `ForStatement`, `ForInStatement`, `WithStatement` | ES5 |
+| `ArrowFunctionExpression`, `ClassDeclaration`, `ClassExpression`, `ClassBody`, `MethodDefinition`, `TemplateLiteral`, `TemplateElement`, `TaggedTemplateExpression`, `SpreadElement`, `RestElement`, `AssignmentPattern`, `ObjectPattern`, `ArrayPattern`, `ForOfStatement`, `YieldExpression`, `ImportDeclaration`, `ImportSpecifier`, `ImportDefaultSpecifier`, `ImportNamespaceSpecifier`, `ExportNamedDeclaration`, `ExportSpecifier`, `ExportDefaultDeclaration`, `ExportAllDeclaration`, `Super`, `MetaProperty` (`new.target`) | ES2015 (6) |
+| `AwaitExpression`, async functions                                  | ES2017 (8)      |
+| `ChainExpression`, `ImportExpression`, `MetaProperty` (`import.meta`), `ExportAllDeclaration` with `exported` (`export * as ns`), `Literal` with `bigint` | ES2020 (11) |
+| `PropertyDefinition`, `PrivateIdentifier`, `StaticBlock`, top-level `await` (modules only) | ES2022 (13) |
+| `ImportAttribute` (import attributes, stage 3 proposal)             | ES2025 (16)     |
+
+Minimum ECMAScript edition at which each operator is supported:
+
+| Operator              | Minimum version |
+| :-------------------- | :-------------- |
+| `**`, `**=`           | ES2016 (7)      |
+| `??`                  | ES2020 (11)     |
+| `&&=`, `||=`, `??=`   | ES2021 (12)     |
+
+Minimum ECMAScript edition at which each regular expression flag is supported:
+
+| Flag            | Minimum version |
+| :-------------- | :-------------- |
+| `y` (sticky), `u` (unicode) | ES2015 (6) |
+| `s` (dotAll)    | ES2018 (9)      |
+| `d` (indices)   | ES2022 (13)     |
+| `v` (unicode sets) | ES2024 (15)  |
+
+Contextual rules (checked regardless of the node type version):
+
+- `await` is only allowed in async functions; at the top level of a module it requires ES2022.
+- `yield` is only allowed in generator functions.
+- `super` is only allowed in classes and object methods.
+- Private identifiers (`#name`) are only allowed in class bodies.
+- `new.target` is only allowed in functions and class static blocks.
+- `import.meta` is only allowed in modules (ES2020).
+- Object spread/rest (`...` in object literals and patterns) requires ES2018.
 
 ### `GENERATOR: object`
 
@@ -271,6 +338,8 @@ The `bin/astring` utility can be used to convert a JSON-formatted ESTree complia
 - `-i`, `--indent`: string to use as indentation (defaults to `"␣␣"`)
 - `-l`, `--line-end`: string to use for line endings (defaults to `"\n"`)
 - `-s`, `--starting-indent-level`: indent level to start from (defaults to `0`)
+- `-t`, `--target`: target ECMAScript edition (5..16) or year (2009..2025); when set, the AST is checked against the [syntax profile](#syntax-profile) before writing
+- `-m`, `--source-type`: source type of the target, `"script"` or `"module"` (defaults to `"script"`)
 - `-h`, `--help`: print a usage message and exit
 - `-v`, `--version`: print package version and exit
 
