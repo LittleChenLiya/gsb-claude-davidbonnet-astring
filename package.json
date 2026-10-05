@@ -23,6 +23,7 @@
     "test": "npm run eslint && npm run prettier:check && npm run build:minified && npm run test:coverage",
     "dev": "ava --watch src/tests/astring.js",
     "test:coverage": "c8 --reporter=html --reporter=text --reporter=lcov --include='src/*.js' --exclude='src/tests/**/*.js' ava src/tests/astring.js",
+    "test:strict-raw": "node --test src/tests/strict-raw.test.mjs && node examples/strict-raw/run.mjs",
     "test:scripts": "npm run test:scripts:build && ava src/tests/_scripts.js",
     "test:performance": "ava src/tests/performance.js",
     "benchmark": "node --require esm ./src/tests/benchmark.js",

@@ -1083,6 +1083,277 @@ export const GENERATOR = {
   },
 }
 
+/*
+Strict raw literal strategy.
+A `Literal` node carrying the non-standard `raw` property is only rendered
+verbatim if that `raw` parses back into exactly one literal whose value is
+equivalent to the node's declared `value` (string, number, BigInt or RegExp).
+No `eval` is ever used: the parsing function is injected explicitly through
+the `literalParser` option and must implement:
+
+  parseLiteral(raw: string, node: object): ESTree.ExpressionNode
+
+A bare function with the same signature is also accepted. The whole AST is
+verified before anything is written to the output, so a single invalid node
+prevents any output at all.
+*/
+
+export class LiteralVerificationError extends Error {
+  constructor(message, node) {
+    super(message)
+    this.name = 'LiteralVerificationError'
+    this.node = node
+  }
+}
+
+const LITERAL_NODE_TYPES = ['Literal', 'RegExpLiteral', 'BigIntLiteral']
+
+const WHITESPACE_ONLY = /^\s*$/
+
+// Canonical rendering of a verified literal that has no `raw` property.
+function strictRawLiteral(node, state) {
+  if (typeof node.raw === 'string') {
+    // The raw has been verified against the declared value beforehand
+    state.write(node.raw, node)
+  } else if (node.regex != null) {
+    state.write(`/${node.regex.pattern}/${node.regex.flags}`, node)
+  } else if (node.bigint != null) {
+    state.write(node.bigint + 'n', node)
+  } else if (typeof node.value === 'bigint') {
+    state.write(String(node.value) + 'n', node)
+  } else if (node.value instanceof RegExp) {
+    state.write(`/${node.value.source}/${node.value.flags}`, node)
+  } else if (typeof node.value === 'number' && Object.is(node.value, -0)) {
+    // `JSON.stringify(-0)` is `"0"`: preserve the negative-zero identity
+    state.write('-0', node)
+  } else {
+    state.write(stringify(node.value), node)
+  }
+}
+
+// Builds the identity descriptor of a declared literal node, or `null` if the
+// declared value cannot be represented by a strict literal (e.g. `NaN`).
+function literalIdentity(node) {
+  if (node.regex != null && typeof node.regex.pattern === 'string') {
+    return {
+      kind: 'RegExp',
+      pattern: node.regex.pattern,
+      flags: node.regex.flags == null ? '' : String(node.regex.flags),
+    }
+  }
+  if (node.bigint != null) {
+    return { kind: 'BigInt', digits: String(node.bigint) }
+  }
+  const { value } = node
+  if (typeof value === 'bigint') {
+    return { kind: 'BigInt', digits: String(value) }
+  }
+  switch (typeof value) {
+    case 'string':
+      return { kind: 'string', value }
+    case 'number':
+      // Non-finite numbers (`NaN`, `Infinity`) are not literals and would be
+      // turned into `null` by `JSON.stringify`
+      return Number.isFinite(value) ? { kind: 'number', value } : null
+    case 'boolean':
+      return { kind: 'boolean', value }
+    case 'object':
+      return value === null ? { kind: 'null' } : null
+    default:
+      return null
+  }
+}
+
+// Resolves the identity of the single expression parsed from a `raw` string.
+// Only plain literals are recognized, plus the negative-zero convention
+// (unary minus applied to the numeric literal `0`).
+function expressionLiteralIdentity(expression) {
+  if (expression == null) {
+    return null
+  }
+  if (LITERAL_NODE_TYPES.indexOf(expression.type) !== -1) {
+    return literalIdentity(expression)
+  }
+  if (
+    expression.type === 'UnaryExpression' &&
+    expression.prefix &&
+    expression.operator === '-' &&
+    expression.argument != null &&
+    expression.argument.type === 'Literal' &&
+    typeof expression.argument.value === 'number' &&
+    Object.is(expression.argument.value, 0)
+  ) {
+    // The negative-zero identity convention: `-0`, `-0.0`, ...
+    return { kind: 'number', value: -0 }
+  }
+  return null
+}
+
+function normalizeRegExpFlags(flags) {
+  return String(flags).split('').sort().join('')
+}
+
+// Compares the true identity of two literals. Strings, numbers, BigInts and
+// RegExps are each compared with their type-specific identity.
+function literalIdentitiesMatch(left, right) {
+  if (left == null || right == null || left.kind !== right.kind) {
+    return false
+  }
+  switch (left.kind) {
+    case 'string':
+      return left.value === right.value
+    case 'number':
+      // `Object.is` distinguishes negative zero from positive zero
+      return Object.is(left.value, right.value)
+    case 'boolean':
+      return left.value === right.value
+    case 'null':
+      return true
+    case 'BigInt':
+      return left.digits === right.digits
+    case 'RegExp':
+      // The pattern and the flags are both verified (flag order is irrelevant)
+      return (
+        left.pattern === right.pattern &&
+        normalizeRegExpFlags(left.flags) === normalizeRegExpFlags(right.flags)
+      )
+    default:
+      return false
+  }
+}
+
+function resolveLiteralParser(parser) {
+  if (typeof parser === 'function') {
+    return parser
+  }
+  if (parser != null && typeof parser.parseLiteral === 'function') {
+    return (raw, node) => parser.parseLiteral(raw, node)
+  }
+  throw new LiteralVerificationError(
+    'A `literalParser` function or an object with a `parseLiteral(raw, node)` method is required for strict raw literal verification',
+  )
+}
+
+function verifyLiteralNode(node, parseLiteral) {
+  const { raw } = node
+  if (raw != null && typeof raw !== 'string') {
+    throw new LiteralVerificationError(
+      `Invalid literal raw ${stringify(raw)}: expected a string`,
+      node,
+    )
+  }
+  const declaredIdentity = literalIdentity(node)
+  if (typeof raw !== 'string') {
+    if (declaredIdentity == null) {
+      throw new LiteralVerificationError(
+        'Literal declares a value that cannot be rendered as a strict literal',
+        node,
+      )
+    }
+    return
+  }
+  let expression
+  try {
+    expression = parseLiteral(raw, node)
+  } catch (error) {
+    throw new LiteralVerificationError(
+      `Literal raw ${stringify(raw)} could not be parsed: ${error.message}`,
+      node,
+    )
+  }
+  if (
+    expression == null ||
+    typeof expression !== 'object' ||
+    typeof expression.type !== 'string'
+  ) {
+    throw new LiteralVerificationError(
+      `Literal raw ${stringify(raw)} did not parse into an AST node`,
+      node,
+    )
+  }
+  if (
+    typeof expression.start === 'number' &&
+    typeof expression.end === 'number'
+  ) {
+    // The raw must contain the literal and nothing else: any trailing code,
+    // semicolon or comment is rejected
+    if (
+      !WHITESPACE_ONLY.test(raw.slice(0, expression.start)) ||
+      !WHITESPACE_ONLY.test(raw.slice(expression.end))
+    ) {
+      throw new LiteralVerificationError(
+        `Literal raw ${stringify(
+          raw,
+        )} must contain a single literal with no additional code`,
+        node,
+      )
+    }
+  }
+  const parsedIdentity = expressionLiteralIdentity(expression)
+  if (!literalIdentitiesMatch(parsedIdentity, declaredIdentity)) {
+    throw new LiteralVerificationError(
+      `Literal raw ${stringify(
+        raw,
+      )} must denote a single literal equivalent to its declared value`,
+      node,
+    )
+  }
+}
+
+function isTraversableValue(value) {
+  return (
+    value != null &&
+    typeof value === 'object' &&
+    (Array.isArray(value) || typeof value.type !== 'undefined')
+  )
+}
+
+// Walks every AST node reachable from `node` (arrays of children included).
+// Non-node objects (e.g. locations, `regex` descriptors) are not descended
+// into, and cycles are ignored.
+function visitAstNodes(node, visit) {
+  const seen = new Set()
+  const walk = (currentNode) => {
+    if (!isTraversableValue(currentNode) || seen.has(currentNode)) {
+      return
+    }
+    seen.add(currentNode)
+    if (Array.isArray(currentNode)) {
+      for (const item of currentNode) {
+        walk(item)
+      }
+      return
+    }
+    if (typeof currentNode.type === 'string') {
+      visit(currentNode)
+    }
+    for (const key in currentNode) {
+      if (key === 'parent' || key === 'loc' || key === 'range') {
+        continue
+      }
+      walk(currentNode[key])
+    }
+  }
+  walk(node)
+}
+
+export function verifyLiterals(node, parser) {
+  /*
+  Verifies every literal node reachable from the provided AST `node` using the
+  explicitly injected `parser` (a function or an object exposing
+  `parseLiteral(raw, node)`). Throws a `LiteralVerificationError` at the first
+  node whose `raw` does not parse into a single literal equivalent to its
+  declared value. Returns the `node` unchanged when the whole tree is valid.
+  */
+  const parseLiteral = resolveLiteralParser(parser)
+  visitAstNodes(node, (child) => {
+    if (LITERAL_NODE_TYPES.indexOf(child.type) !== -1) {
+      verifyLiteralNode(child, parseLiteral)
+    }
+  })
+  return node
+}
+
 const EMPTY_OBJECT = {}
 
 /*
@@ -1101,7 +1372,19 @@ class State {
     } else {
       this.output = ''
     }
-    this.generator = setup.generator != null ? setup.generator : GENERATOR
+    let { generator } = setup
+    if (setup.strictRaw) {
+      // Render `Literal` nodes only from values already verified by the
+      // preflight; custom generators are preserved through prototyping
+      if (generator == null) {
+        generator = GENERATOR
+      }
+      generator = Object.create(generator)
+      generator.Literal = strictRawLiteral
+    } else if (generator == null) {
+      generator = GENERATOR
+    }
+    this.generator = generator
     this.expressionsPrecedence =
       setup.expressionsPrecedence != null
         ? setup.expressionsPrecedence
@@ -1217,7 +1500,13 @@ export function generate(node, options) {
   - `output`: output stream to write the rendered code to (defaults to `null`)
   - `generator`: custom code generator (defaults to `GENERATOR`)
   - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+  - `strictRaw`: when `true`, the whole AST is verified before anything is written: every `Literal` `raw` must parse into a single literal equivalent to its declared `value` (defaults to `false`, which leaves generation unchanged)
+  - `literalParser`: parser injected explicitly for strict raw verification, as a function `(raw, node) => expressionNode` or an object exposing `parseLiteral(raw, node)`; required when `strictRaw` is enabled
   */
+  if (options != null && options.strictRaw) {
+    // The whole tree must pass preflight before a single write happens
+    verifyLiterals(node, options.literalParser)
+  }
   const state = new State(options)
   // Travel through the AST node and generate the code
   state.generator[node.type](node, state)

@@ -87,6 +87,8 @@ The `options` are:
 - `generator`: custom code generator (defaults to `GENERATOR`)
 - `sourceMap`: [source map generator](https://github.com/mozilla/source-map#sourcemapgenerator) (defaults to `null`)
 - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+- `strictRaw`: verify every literal `raw` before writing (defaults to `false`, see [Strict raw literals](#strict-raw-literals))
+- `literalParser`: explicitly injected parser used when `strictRaw` is enabled, as a function `(raw, node) => expressionNode` or an object exposing `parseLiteral(raw, node)`
 
 ### `GENERATOR: object`
 
@@ -100,9 +102,57 @@ Mapping of node types and their precedence level to let the generator know when 
 
 Default precedence level that always triggers the use of parentheses.
 
+### `verifyLiterals(node: object, parser: function | object): object`
+
+Verifies every literal node reachable from the AST `node` with the explicitly injected `parser`. Throws a `LiteralVerificationError` if a literal `raw` does not parse into a single literal equivalent to its declared value. Returns the `node` when the whole tree is valid. See [Strict raw literals](#strict-raw-literals).
+
+### `LiteralVerificationError: Error`
+
+Error thrown by [`verifyLiterals`](#verifyliteralsnode-object-parser-function--object-object) and by `generate` when `strictRaw` is enabled. The offending node is exposed on its `node` property.
+
 ### `baseGenerator: object`
 
 > :warning: Deprecated, use `GENERATOR` instead.
+
+## Strict raw literals
+
+A `Literal` node may carry the non-standard `raw` property, which Astring renders verbatim by default. If the AST is not trusted, a forged raw such as `0;evil()` can inject arbitrary code into the output.
+
+Enable the explicit strict raw strategy with `strictRaw: true`:
+
+- a literal `raw` is rendered only if it parses into exactly one literal whose value is equivalent to the node's declared `value`;
+- strings, numbers, BigInts and RegExps are compared by their true identity: numbers use `Object.is` (so negative zero is distinguished from positive zero) and a RegExp must match on both `pattern` and `flags`;
+- any other expression in the raw (calls, identifiers, operators, …) is rejected;
+- code is never evaluated (`eval` is not used): the parser is injected by the caller through `literalParser`;
+- the whole AST is verified before anything is written, so a single invalid node prevents any output;
+- when `strictRaw` is not enabled, generation is unchanged.
+
+```js
+import { Parser } from 'acorn'
+import { generate } from 'astring'
+
+const literalParser = (raw) =>
+  Parser.parseExpressionAt(raw, 0, { ecmaVersion: 'latest' })
+
+// Throws LiteralVerificationError and writes nothing:
+generate(
+  {
+    type: 'ExpressionStatement',
+    expression: { type: 'Literal', value: 1, raw: '0;evil()' },
+  },
+  { strictRaw: true, literalParser },
+)
+```
+
+The negative-zero identity is given an explicit convention: `-0` parsed from source is a unary minus applied to the literal `0`, a `Literal` declaring `value: -0` may carry the raw `-0`, and in strict mode such a node without a raw renders as `-0`.
+
+Runnable AST examples and a Node-directed command live in [`examples/strict-raw`](./examples/strict-raw):
+
+```sh
+node examples/strict-raw/run.mjs
+# or
+npm run test:strict-raw
+```
 
 ## Benchmark
 
