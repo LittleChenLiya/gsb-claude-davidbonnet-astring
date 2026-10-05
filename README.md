@@ -87,6 +87,9 @@ The `options` are:
 - `generator`: custom code generator (defaults to `GENERATOR`)
 - `sourceMap`: [source map generator](https://github.com/mozilla/source-map#sourcemapgenerator) (defaults to `null`)
 - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+- `target`: ECMAScript syntax target (`'es5'`, `'es2015'`, …, `'es2022'`, or the corresponding edition or year number) that enables the [syntax target profile](#syntax-targets) (defaults to `null`, no check)
+- `parser`: parser function used to check the generated code when `target` is set (defaults to [Acorn](https://github.com/acornjs/acorn)'s `parse`)
+- `sourceType`: source type (`'script'` or `'module'`) used when checking the generated code, derived from the AST if omitted (defaults to `null`)
 
 ### `GENERATOR: object`
 
@@ -103,6 +106,67 @@ Default precedence level that always triggers the use of parentheses.
 ### `baseGenerator: object`
 
 > :warning: Deprecated, use `GENERATOR` instead.
+
+### `SYNTAX_PROFILE: object`
+
+Explicit syntax target profile used when the `target` option is set: a `nodes` map and an `operators` map (`unary`, `update`, `binary`, `logical`, `assignment`) giving the minimum ECMAScript edition required by each known AST node type and operator. Editions are numbers: `5` for ES5, `6` for ES2015, …, `13` for ES2022. Node types and operators that are not listed are unknown to the profile and rejected.
+
+### `SyntaxTargetError: class`
+
+Error (a `SyntaxError` subclass) thrown when an AST or the generated code does not conform to the requested syntax `target`. The message carries the source location of the offending node when available, and the `node` and `loc` properties expose it.
+
+## Syntax targets
+
+Setting the `target` option enables an explicit syntax target profile:
+
+1. The AST is checked node by node and operator by operator against the minimum ECMAScript edition that each used feature requires (see the version table below). Unknown node types, operators, declaration kinds, and meta properties are rejected instead of being silently passed through, and the reported error carries the source location of the offending node.
+2. Function and class context restrictions are checked: `await` requires an async function (or the top level of a module with target ES2022 or later), `yield` requires a generator function, `return` requires a function, `super` requires a method or a class static block, `super(…)` calls require a class constructor, `new.target` requires a function, `import.meta` requires a module, private identifiers (`#x`) require an enclosing class, and `await`, `yield`, and `return` are not allowed directly in a class static block.
+3. The generated code is checked again with an independent parser ([Acorn](https://github.com/acornjs/acorn) by default, overridable with the `parser` option) set to the target edition.
+
+Every check runs _before_ anything is written: when a check fails, the provided `output` stream has received zero bytes. No transpilation is performed: code that does not fit the target is rejected. When `target` is not set, `generate` behaves exactly as before.
+
+Supported targets are `es5` and `es2015` to `es2022` (also accepted as edition or year numbers, such as `11` or `2020`). The profile intentionally covers only the syntax listed in this version table:
+
+| Minimum target | Syntax                                                                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ES5            | All ES5 syntax (baseline)                                                                                                                                          |
+| ES2015         | `let`/`const`, arrow functions, classes, template literals, generators/`yield`, `for…of`, destructuring, rest/spread in arrays and calls, computed/shorthand/method properties, modules (`import`/`export`), `super`, `new.target` |
+| ES2016         | Exponentiation operator `**` and `**=`                                                                                                                             |
+| ES2017         | `async` functions and `await`                                                                                                                                      |
+| ES2018         | Object rest/spread properties, async generator functions, `for await…of`                                                                                           |
+| ES2019         | Optional catch binding (`try {} catch {}`)                                                                                                                         |
+| ES2020         | Optional chaining (`?.`), nullish coalescing (`??`), BigInt literals, dynamic `import()`, `import.meta`, `export * as ns`                                           |
+| ES2021         | Logical assignment (`&&=`, `\|\|=`, `??=`), numeric separators (`1_000`)                                                                                            |
+| ES2022         | Class fields, private identifiers (`#x`, including `#x in obj`), class static blocks, top-level `await`                                                            |
+
+Example:
+
+```js
+import { parse } from 'acorn'
+import { generate } from 'astring'
+
+const ast = parse('a?.b ?? c;', { ecmaVersion: 2020, locations: true })
+generate(ast, { target: 'es2019' })
+// SyntaxTargetError: Node type "ChainExpression" requires ES2020, but the
+// target is ES2019 (line 1, column 0)
+generate(ast, { target: 'es2020' }) // → 'a?.b ?? c;\n'
+```
+
+### Checking the syntax target profile locally
+
+The profile is covered by a dependency-light test suite that runs with plain Node.js (only `acorn` needs to be installed):
+
+```bash
+npm run test:target
+# which runs:
+node src/tests/target.js
+```
+
+The command line interface also accepts the target:
+
+```bash
+astring --target es2020 ast.json > result.js
+```
 
 ## Benchmark
 
@@ -271,6 +335,7 @@ The `bin/astring` utility can be used to convert a JSON-formatted ESTree complia
 - `-i`, `--indent`: string to use as indentation (defaults to `"␣␣"`)
 - `-l`, `--line-end`: string to use for line endings (defaults to `"\n"`)
 - `-s`, `--starting-indent-level`: indent level to start from (defaults to `0`)
+- `-t`, `--target`: ECMAScript syntax target to check the AST and the generated code against, such as `es2020` (defaults to no check)
 - `-h`, `--help`: print a usage message and exit
 - `-v`, `--version`: print package version and exit
 

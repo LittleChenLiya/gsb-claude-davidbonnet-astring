@@ -25,6 +25,7 @@
     "test:coverage": "c8 --reporter=html --reporter=text --reporter=lcov --include='src/*.js' --exclude='src/tests/**/*.js' ava src/tests/astring.js",
     "test:scripts": "npm run test:scripts:build && ava src/tests/_scripts.js",
     "test:performance": "ava src/tests/performance.js",
+    "test:target": "node src/tests/target.js",
     "benchmark": "node --require esm ./src/tests/benchmark.js",
     "eslint": "eslint src",
     "prettier": "prettier --write \"{src,scripts}/**/*.js\" \"bin/astring\"",
@@ -46,13 +47,15 @@
   },
   "author": "David Bonnet <david@bonnet.cc>",
   "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.6.0"
+  },
   "devDependencies": {
     "@babel/cli": "^7.14.3",
     "@babel/core": "^7.14.3",
     "@babel/generator": "^7.14.3",
     "@babel/parser": "^7.16.4",
     "@babel/preset-env": "^7.14.4",
-    "acorn": "^8.6.0",
     "acorn-import-attributes": "^1.9.5",
     "astravel": "^0.5.0",
     "ava": "^3.15.0",

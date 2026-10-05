@@ -29,6 +29,21 @@ export type Generator = {
 }
 
 /**
+ * ECMAScript syntax target, as a name (`'es5'`, `'es2015'`, …, `'es2022'`), an
+ * edition number (`5`, `6`, …, `13`), or a year number (`2015`, …, `2022`).
+ */
+export type SyntaxTarget = string | number
+
+/**
+ * Parser function used to check the generated code against the syntax target.
+ * Defaults to Acorn's `parse`.
+ */
+export type SyntaxTargetParser = (
+  code: string,
+  options: { ecmaVersion: number; sourceType: 'script' | 'module' },
+) => unknown
+
+/**
  * Code generator options.
  */
 export interface Options<Output = null> {
@@ -60,6 +75,22 @@ export interface Options<Output = null> {
    * Custom code generator logic.
    */
   generator?: Generator
+  /**
+   * Explicit syntax target profile: the AST and the generated code are checked
+   * against the minimum ECMAScript edition of each used feature, before
+   * anything is written. Defaults to `null` (no check).
+   */
+  target?: SyntaxTarget
+  /**
+   * Parser used to check the generated code when `target` is set, defaults to
+   * Acorn's `parse`.
+   */
+  parser?: SyntaxTargetParser
+  /**
+   * Source type used when checking the generated code, derived from the AST
+   * if omitted.
+   */
+  sourceType?: 'script' | 'module'
 }
 
 /**
@@ -87,3 +118,30 @@ export const GENERATOR: Generator
  * @deprecated Use {@link GENERATOR} instead.
  */
 export const baseGenerator: Generator
+
+/**
+ * Error thrown when an AST or the generated code does not conform to the
+ * requested syntax `target`. The offending `node` and its `loc` source
+ * location are exposed when available.
+ */
+export class SyntaxTargetError extends SyntaxError {
+  node?: Node
+  loc?: unknown
+}
+
+/**
+ * Explicit syntax target profile: minimum ECMAScript edition (`5` for ES5,
+ * `6` for ES2015, …, `13` for ES2022) required by each known AST node type
+ * and operator. Node types and operators that are not listed here are unknown
+ * to the profile and rejected when a `target` is set.
+ */
+export const SYNTAX_PROFILE: {
+  nodes: { [nodeType: string]: number }
+  operators: {
+    unary: { [operator: string]: number }
+    update: { [operator: string]: number }
+    binary: { [operator: string]: number }
+    logical: { [operator: string]: number }
+    assignment: { [operator: string]: number }
+  }
+}

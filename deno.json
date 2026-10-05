@@ -2,6 +2,9 @@
   "name": "@davidbonnet/astring",
   "version": "1.8.6",
   "exports": "./src/astring.js",
+  "imports": {
+    "acorn": "npm:acorn@^8.6.0"
+  },
   "publish": {
     "include": [
       "LICENSE",

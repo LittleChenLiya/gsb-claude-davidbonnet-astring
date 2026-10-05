@@ -8,6 +8,8 @@
 // Please use the GitHub bug tracker to report issues:
 // https://github.com/davidbonnet/astring/issues
 
+import { parse as parseWithAcorn } from 'acorn'
+
 const { stringify } = JSON
 
 /* c8 ignore if */
@@ -1090,6 +1092,651 @@ DEPRECATED: Alternate export of `GENERATOR`.
 */
 export const baseGenerator = GENERATOR
 
+/*
+Explicit syntax target profile.
+
+The `target` option of `generate` enables an explicit syntax target profile:
+the AST is checked node by node and operator by operator against the minimum
+ECMAScript edition that each feature requires, function and class context
+restrictions are verified, and the generated code is checked again with an
+independent parser (Acorn by default) set to the target edition. Every check
+runs before anything is written to the output, and no transpilation is
+performed: code that does not fit the target is rejected.
+
+Editions are identified by a number: `5` for ES5, `6` for ES2015, …, `13` for
+ES2022.
+*/
+
+const MIN_TARGET_EDITION = 5
+const MAX_TARGET_EDITION = 13
+
+function editionName(edition) {
+  /*
+  Returns the display name of the provided ECMAScript `edition` number.
+  */
+  return edition === MIN_TARGET_EDITION ? 'ES5' : `ES${edition + 2009}`
+}
+
+/*
+Error thrown when the provided AST or the generated code does not conform to
+the requested syntax target. The offending `node` and its `loc` source
+location are exposed when available.
+*/
+export class SyntaxTargetError extends SyntaxError {
+  constructor(message, node) {
+    if (node != null && node.loc != null && node.loc.start != null) {
+      const { line, column } = node.loc.start
+      message += ` (line ${line}, column ${column})`
+    } else {
+      message += ' (location unknown)'
+    }
+    super(message)
+    this.name = 'SyntaxTargetError'
+    if (node != null) {
+      this.node = node
+      if (node.loc != null) {
+        this.loc = node.loc
+      }
+    }
+  }
+}
+
+const NODE_VERSIONS = {
+  // ES5 (baseline)
+  Program: 5,
+  Identifier: 5,
+  Literal: 5,
+  RegExpLiteral: 5,
+  ThisExpression: 5,
+  ArrayExpression: 5,
+  ObjectExpression: 5,
+  Property: 5,
+  FunctionDeclaration: 5,
+  FunctionExpression: 5,
+  ExpressionStatement: 5,
+  BlockStatement: 5,
+  EmptyStatement: 5,
+  DebuggerStatement: 5,
+  WithStatement: 5,
+  ReturnStatement: 5,
+  LabeledStatement: 5,
+  BreakStatement: 5,
+  ContinueStatement: 5,
+  IfStatement: 5,
+  SwitchStatement: 5,
+  SwitchCase: 5,
+  ThrowStatement: 5,
+  TryStatement: 5,
+  CatchClause: 5,
+  WhileStatement: 5,
+  DoWhileStatement: 5,
+  ForStatement: 5,
+  ForInStatement: 5,
+  VariableDeclaration: 5,
+  VariableDeclarator: 5,
+  UnaryExpression: 5,
+  UpdateExpression: 5,
+  BinaryExpression: 5,
+  LogicalExpression: 5,
+  AssignmentExpression: 5,
+  ConditionalExpression: 5,
+  CallExpression: 5,
+  NewExpression: 5,
+  MemberExpression: 5,
+  SequenceExpression: 5,
+  // ES2015
+  ArrowFunctionExpression: 6,
+  ClassBody: 6,
+  ClassDeclaration: 6,
+  ClassExpression: 6,
+  MethodDefinition: 6,
+  Super: 6,
+  MetaProperty: 6,
+  TemplateLiteral: 6,
+  TemplateElement: 6,
+  TaggedTemplateExpression: 6,
+  YieldExpression: 6,
+  ForOfStatement: 6,
+  SpreadElement: 6,
+  RestElement: 6,
+  ObjectPattern: 6,
+  ArrayPattern: 6,
+  AssignmentPattern: 6,
+  ImportDeclaration: 6,
+  ImportSpecifier: 6,
+  ImportDefaultSpecifier: 6,
+  ImportNamespaceSpecifier: 6,
+  ExportNamedDeclaration: 6,
+  ExportDefaultDeclaration: 6,
+  ExportAllDeclaration: 6,
+  ExportSpecifier: 6,
+  // ES2017
+  AwaitExpression: 8,
+  // ES2020
+  ChainExpression: 11,
+  ImportExpression: 11,
+  // ES2022
+  PropertyDefinition: 13,
+  PrivateIdentifier: 13,
+  StaticBlock: 13,
+}
+
+const OPERATOR_VERSIONS = {
+  unary: {
+    '-': 5,
+    '+': 5,
+    '!': 5,
+    '~': 5,
+    typeof: 5,
+    void: 5,
+    delete: 5,
+  },
+  update: {
+    '++': 5,
+    '--': 5,
+  },
+  binary: {
+    '==': 5,
+    '!=': 5,
+    '===': 5,
+    '!==': 5,
+    '<': 5,
+    '<=': 5,
+    '>': 5,
+    '>=': 5,
+    '<<': 5,
+    '>>': 5,
+    '>>>': 5,
+    '+': 5,
+    '-': 5,
+    '*': 5,
+    '/': 5,
+    '%': 5,
+    '|': 5,
+    '^': 5,
+    '&': 5,
+    in: 5,
+    instanceof: 5,
+    '**': 7,
+  },
+  logical: {
+    '&&': 5,
+    '||': 5,
+    '??': 11,
+  },
+  assignment: {
+    '=': 5,
+    '+=': 5,
+    '-=': 5,
+    '*=': 5,
+    '/=': 5,
+    '%=': 5,
+    '<<=': 5,
+    '>>=': 5,
+    '>>>=': 5,
+    '&=': 5,
+    '|=': 5,
+    '^=': 5,
+    '**=': 7,
+    '&&=': 12,
+    '||=': 12,
+    '??=': 12,
+  },
+}
+
+/*
+Explicit syntax target profile: minimum ECMAScript edition required by each
+known AST node type and operator. Node types and operators that are not listed
+here are unknown to the profile and rejected when a `target` is set.
+*/
+export const SYNTAX_PROFILE = {
+  nodes: NODE_VERSIONS,
+  operators: OPERATOR_VERSIONS,
+}
+
+function normalizeTarget(target) {
+  /*
+  Returns the ECMAScript edition number of the provided `target`, which can be
+  a name (`'es5'`, `'es2015'`, …), an edition number (`5`, `6`, …), or a year
+  number (`2015`, …). Throws a `SyntaxTargetError` if the target is not
+  supported.
+  */
+  let edition = target
+  if (typeof edition === 'string') {
+    const name = edition.trim().toLowerCase()
+    edition = Number(
+      name[0] === 'e' && name[1] === 's' ? name.substring(2) : name,
+    )
+  }
+  if (typeof edition === 'number' && edition >= 2015) {
+    edition -= 2009
+  }
+  if (
+    typeof edition !== 'number' ||
+    !Number.isInteger(edition) ||
+    (edition !== MIN_TARGET_EDITION &&
+      (edition < 6 || edition > MAX_TARGET_EDITION))
+  ) {
+    throw new SyntaxTargetError(
+      `Unsupported syntax target "${target}"; supported targets are "es5" and "es2015" to "es2022"`,
+    )
+  }
+  return edition
+}
+
+function fail(node, message) {
+  throw new SyntaxTargetError(message, node)
+}
+
+function requireEdition(node, context, edition, feature) {
+  /*
+  Throws a `SyntaxTargetError` if the `feature` requiring the provided
+  `edition` does not fit the target edition of the `context`.
+  */
+  if (context.edition < edition) {
+    fail(
+      node,
+      `${feature} requires ${editionName(
+        edition,
+      )}, but the target is ${editionName(context.edition)}`,
+    )
+  }
+}
+
+function checkOperator(node, context, versions, type) {
+  /*
+  Checks the operator of the provided `node` against the `versions` table.
+  Unknown operators are rejected.
+  */
+  const version = versions[node.operator]
+  if (version == null) {
+    fail(node, `Unknown ${type} operator "${node.operator}"`)
+  }
+  requireEdition(node, context, version, `Operator "${node.operator}"`)
+}
+
+function checkAsyncContext(node, context, feature) {
+  /*
+  Checks that `await`-related features occur in an async context: an async
+  function, or the top level of a module with target ES2022 or later.
+  */
+  if (context.staticBlockDepth > 0) {
+    fail(node, `"${feature}" is not allowed in a class static block`)
+  }
+  const { functionContext } = context
+  if (functionContext == null) {
+    if (context.edition < 13 || context.sourceType !== 'module') {
+      fail(
+        node,
+        `"${feature}" requires an async function, or the top level of a module with target ES2022 or later`,
+      )
+    }
+  } else if (functionContext.async !== true) {
+    fail(node, `"${feature}" requires an async function`)
+  }
+}
+
+function checkNode(node, parent, context) {
+  /*
+  Checks the provided AST `node` against the syntax target profile, based on
+  its type, its operator, and the function and class `context` it occurs in.
+  */
+  const nodeVersion = NODE_VERSIONS[node.type]
+  if (nodeVersion == null) {
+    fail(node, `Unknown node type "${node.type}"`)
+  }
+  requireEdition(node, context, nodeVersion, `Node type "${node.type}"`)
+  switch (node.type) {
+    case 'VariableDeclaration':
+      if (node.kind === 'let' || node.kind === 'const') {
+        requireEdition(node, context, 6, `"${node.kind}" declaration`)
+      } else if (node.kind !== 'var') {
+        fail(node, `Unknown variable declaration kind "${node.kind}"`)
+      }
+      break
+    case 'Property':
+      if (node.kind !== 'init' && node.kind !== 'get' && node.kind !== 'set') {
+        fail(node, `Unknown property kind "${node.kind}"`)
+      }
+      if (node.computed === true) {
+        requireEdition(node, context, 6, 'Computed properties')
+      }
+      if (node.shorthand === true) {
+        requireEdition(node, context, 6, 'Shorthand properties')
+      }
+      if (node.method === true) {
+        requireEdition(node, context, 6, 'Method properties')
+      }
+      break
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      if (node.async === true) {
+        requireEdition(node, context, 8, 'Async functions')
+      }
+      if (node.generator === true) {
+        requireEdition(node, context, 6, 'Generator functions')
+      }
+      if (node.async === true && node.generator === true) {
+        requireEdition(node, context, 9, 'Async generator functions')
+      }
+      break
+    case 'SpreadElement':
+      if (parent != null && parent.type === 'ObjectExpression') {
+        requireEdition(node, context, 9, 'Object spread properties')
+      }
+      break
+    case 'RestElement':
+      if (parent != null && parent.type === 'ObjectPattern') {
+        requireEdition(node, context, 9, 'Object rest properties')
+      }
+      break
+    case 'CatchClause':
+      if (node.param == null) {
+        requireEdition(node, context, 10, 'Optional catch binding')
+      }
+      break
+    case 'MemberExpression':
+    case 'CallExpression':
+      if (node.optional === true) {
+        requireEdition(node, context, 11, 'Optional chaining')
+      }
+      if (
+        node.type === 'CallExpression' &&
+        node.callee != null &&
+        node.callee.type === 'Super'
+      ) {
+        // Super call
+        if (
+          context.staticBlockDepth > 0 ||
+          context.methodFunctionContext == null ||
+          context.methodFunctionContext.kind !== 'constructor'
+        ) {
+          fail(node, '"super(…)" calls require a class constructor')
+        }
+      }
+      break
+    case 'ExportAllDeclaration':
+      if (node.exported != null) {
+        requireEdition(node, context, 11, '"export * as" declarations')
+      }
+      break
+    case 'Literal':
+      if (node.bigint != null) {
+        requireEdition(node, context, 11, 'BigInt literals')
+      } else if (
+        typeof node.value === 'number' &&
+        typeof node.raw === 'string' &&
+        node.raw.indexOf('_') !== -1
+      ) {
+        requireEdition(node, context, 12, 'Numeric separators')
+      }
+      break
+    case 'UnaryExpression':
+      checkOperator(node, context, OPERATOR_VERSIONS.unary, 'unary')
+      break
+    case 'UpdateExpression':
+      checkOperator(node, context, OPERATOR_VERSIONS.update, 'update')
+      break
+    case 'BinaryExpression':
+      checkOperator(node, context, OPERATOR_VERSIONS.binary, 'binary')
+      if (node.left != null && node.left.type === 'PrivateIdentifier') {
+        requireEdition(node, context, 13, 'Private identifier "in" checks')
+      }
+      break
+    case 'LogicalExpression':
+      checkOperator(node, context, OPERATOR_VERSIONS.logical, 'logical')
+      break
+    case 'AssignmentExpression':
+      checkOperator(node, context, OPERATOR_VERSIONS.assignment, 'assignment')
+      break
+    case 'ForOfStatement':
+      if (node.await === true) {
+        requireEdition(node, context, 9, 'Asynchronous iteration')
+        checkAsyncContext(node, context, 'for await…of')
+      }
+      break
+    case 'AwaitExpression':
+      checkAsyncContext(node, context, 'await')
+      break
+    case 'YieldExpression':
+      if (
+        context.staticBlockDepth > 0 ||
+        context.functionContext == null ||
+        context.functionContext.generator !== true
+      ) {
+        fail(node, '"yield" requires a generator function')
+      }
+      break
+    case 'ReturnStatement':
+      if (context.functionContext == null) {
+        fail(node, '"return" requires a function')
+      }
+      break
+    case 'Super':
+      if (
+        context.staticBlockDepth === 0 &&
+        (context.methodFunctionContext == null ||
+          context.methodFunctionContext.kind === 'function')
+      ) {
+        fail(node, '"super" requires a method or a class static block')
+      }
+      break
+    case 'MetaProperty': {
+      const meta = node.meta != null ? node.meta.name : null
+      const property = node.property != null ? node.property.name : null
+      if (meta === 'new' && property === 'target') {
+        if (
+          context.methodFunctionContext == null &&
+          context.staticBlockDepth === 0
+        ) {
+          fail(node, '"new.target" requires a function')
+        }
+      } else if (meta === 'import' && property === 'meta') {
+        requireEdition(node, context, 11, '"import.meta"')
+        if (context.sourceType !== 'module') {
+          fail(node, '"import.meta" requires a module')
+        }
+      } else {
+        fail(node, `Unknown meta property "${meta}.${property}"`)
+      }
+      break
+    }
+    case 'PrivateIdentifier':
+      if (context.classDepth === 0) {
+        fail(
+          node,
+          `Private identifier "#${node.name}" requires an enclosing class`,
+        )
+      }
+      break
+  }
+}
+
+const IGNORED_NODE_KEYS = {
+  loc: true,
+  range: true,
+  start: true,
+  end: true,
+  raw: true,
+  comments: true,
+  leadingComments: true,
+  trailingComments: true,
+}
+
+function validateChildren(node, context) {
+  /*
+  Validates every child AST node of the provided `node`.
+  */
+  for (const key in node) {
+    if (IGNORED_NODE_KEYS[key] !== true) {
+      validateNode(node[key], node, context, null)
+    }
+  }
+}
+
+const METHOD_CONTEXT = {
+  async: false,
+  generator: false,
+  kind: 'method',
+}
+
+function validateNode(node, parent, context, kind) {
+  /*
+  Validates the provided AST `node` and its children against the syntax target
+  profile, keeping track of the function and class `context`. The `kind`
+  parameter provides the method kind (`'constructor'` or `'method'`) when the
+  node is the value of a method or property definition.
+  */
+  if (node == null) {
+    return
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0, { length } = node; i < length; i++) {
+      validateNode(node[i], parent, context, null)
+    }
+    return
+  }
+  if (typeof node.type !== 'string') {
+    // Not an AST node (e.g., location or regex information)
+    return
+  }
+  checkNode(node, parent, context)
+  switch (node.type) {
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression': {
+      const { functionContext, methodFunctionContext, staticBlockDepth } =
+        context
+      context.functionContext = {
+        async: node.async === true,
+        generator: node.generator === true,
+        kind: kind != null ? kind : 'function',
+      }
+      if (node.type !== 'ArrowFunctionExpression') {
+        // Arrow functions inherit `this`, `super`, and `new.target` from the
+        // enclosing context, other functions do not
+        context.methodFunctionContext = context.functionContext
+      }
+      context.staticBlockDepth = 0
+      validateChildren(node, context)
+      context.functionContext = functionContext
+      context.methodFunctionContext = methodFunctionContext
+      context.staticBlockDepth = staticBlockDepth
+      return
+    }
+    case 'StaticBlock': {
+      const { functionContext, methodFunctionContext } = context
+      context.functionContext = null
+      context.methodFunctionContext = null
+      context.staticBlockDepth++
+      validateChildren(node, context)
+      context.functionContext = functionContext
+      context.methodFunctionContext = methodFunctionContext
+      context.staticBlockDepth--
+      return
+    }
+    case 'ClassDeclaration':
+    case 'ClassExpression':
+      context.classDepth++
+      validateChildren(node, context)
+      context.classDepth--
+      return
+    case 'MethodDefinition':
+      validateNode(node.key, node, context, null)
+      validateNode(
+        node.value,
+        node,
+        context,
+        node.kind === 'constructor' ? 'constructor' : 'method',
+      )
+      return
+    case 'PropertyDefinition': {
+      // Class field initializers are evaluated like method calls: they can
+      // use `super` and `new.target`, but not `await`, `yield`, or `return`
+      const { functionContext, methodFunctionContext } = context
+      validateNode(node.key, node, context, null)
+      context.functionContext = METHOD_CONTEXT
+      context.methodFunctionContext = METHOD_CONTEXT
+      validateNode(node.value, node, context, null)
+      context.functionContext = functionContext
+      context.methodFunctionContext = methodFunctionContext
+      return
+    }
+    case 'Property':
+      validateNode(node.key, node, context, null)
+      validateNode(
+        node.value,
+        node,
+        context,
+        node.method === true || node.kind !== 'init' ? 'method' : null,
+      )
+      return
+    default:
+      validateChildren(node, context)
+  }
+}
+
+function validateSyntax(node, edition, sourceType) {
+  /*
+  Throws a `SyntaxTargetError` if the provided AST `node` uses syntax that
+  does not fit the provided ECMAScript `edition`, or uses known syntax in an
+  invalid function or class context.
+  */
+  validateNode(
+    node,
+    null,
+    {
+      edition,
+      sourceType,
+      functionContext: null,
+      methodFunctionContext: null,
+      classDepth: 0,
+      staticBlockDepth: 0,
+    },
+    null,
+  )
+}
+
+function generateWithTarget(node, setup) {
+  /*
+  Returns a string representing the rendered code of the provided AST `node`,
+  checked against the explicit syntax target profile of `setup.target`. Every
+  check runs before anything is written to `setup.output`.
+  */
+  const edition = normalizeTarget(setup.target)
+  const sourceType =
+    setup.sourceType != null
+      ? setup.sourceType
+      : node != null && node.type === 'Program' && node.sourceType === 'module'
+      ? 'module'
+      : 'script'
+  // Checks the AST against the syntax target profile
+  validateSyntax(node, edition, sourceType)
+  // Generates the code into an internal buffer
+  const state = new State({ ...setup, output: null })
+  state.generator[node.type](node, state)
+  const code = state.output
+  // Checks the generated code with an independent parser
+  const parse = setup.parser != null ? setup.parser : parseWithAcorn
+  try {
+    parse(code, { ecmaVersion: edition, sourceType })
+  } catch (error) {
+    throw new SyntaxTargetError(
+      `Generated code does not conform to ${editionName(edition)}: ${
+        error.message
+      }`,
+      node,
+    )
+  }
+  // All checks passed: writes the code to the output stream, if any
+  if (setup.output != null) {
+    setup.output.write(code)
+    return setup.output
+  }
+  return code
+}
+
 class State {
   constructor(options) {
     const setup = options == null ? EMPTY_OBJECT : options
@@ -1217,7 +1864,15 @@ export function generate(node, options) {
   - `output`: output stream to write the rendered code to (defaults to `null`)
   - `generator`: custom code generator (defaults to `GENERATOR`)
   - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+  - `target`: ECMAScript syntax target (`'es5'`, `'es2015'`, …, `'es2022'`, or the corresponding edition or year number) that enables the explicit syntax target profile (defaults to `null`, no check)
+  - `parser`: parser function used to check the generated code when `target` is set (defaults to Acorn's `parse`)
+  - `sourceType`: source type (`'script'` or `'module'`) used when checking the generated code, derived from the AST if omitted (defaults to `null`)
   */
+  const setup = options == null ? EMPTY_OBJECT : options
+  if (setup.target != null) {
+    // Check the AST and the generated code against the syntax target profile
+    return generateWithTarget(node, setup)
+  }
   const state = new State(options)
   // Travel through the AST node and generate the code
   state.generator[node.type](node, state)

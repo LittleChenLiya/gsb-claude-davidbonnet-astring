@@ -21,7 +21,7 @@ function printHelp(status) {
   print(
     '       ' +
       binName +
-      ' [-i, --indent INDENT] [-l, --line-end LINE_END] [-s, --starting-indent-level LEVEL] files...',
+      ' [-i, --indent INDENT] [-l, --line-end LINE_END] [-s, --starting-indent-level LEVEL] [-t, --target TARGET] files...',
   )
   process.exit(status)
 }
@@ -47,6 +47,10 @@ for (let i = 0, length = argv.length; i < length; i++) {
       case '-s':
       case '--starting-indent-level':
         options.startingIndentLevel = parseInt(argv[++i])
+        break
+      case '-t':
+      case '--target':
+        options.target = argv[++i]
         break
       case '-h':
       case '--help':
