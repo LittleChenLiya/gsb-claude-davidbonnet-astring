@@ -1106,6 +1106,11 @@ class State {
       setup.expressionsPrecedence != null
         ? setup.expressionsPrecedence
         : EXPRESSIONS_PRECEDENCE
+    // Strict raw literal policy: when enabled, every `Literal` node's `raw`
+    // property is parsed back and must denote a literal equivalent to the
+    // declared `value`. A parser must be injected through `parser`.
+    this.strict = setup.strict != null ? setup.strict : false
+    this.parser = setup.parser != null ? setup.parser : null
     // Formating setup
     this.indent = setup.indent != null ? setup.indent : '  '
     this.lineEnd = setup.lineEnd != null ? setup.lineEnd : '\n'
@@ -1205,6 +1210,235 @@ class State {
   }
 }
 
+// --- Strict raw literal policy ---------------------------------------------
+//
+// When `options.strict` is enabled, every `Literal` node carrying a non-standard
+// `raw` property is validated before anything is written to the output. The
+// injected `parser` (an object with a `parse(code)` method, or a function
+// `parse(code) => Program`) is used to parse `raw` back into an ESTree. The
+// parsed expression must denote exactly one literal whose identity matches the
+// declared `value`. No `eval` or `Function` constructor is ever used: the
+// comparison is performed on the parsed AST, never by executing code.
+
+const RAW_LITERAL_SKIP_KEYS = {
+  loc: true,
+  range: true,
+  start: true,
+  end: true,
+  comments: true,
+  leadingComments: true,
+  trailingComments: true,
+}
+
+function walk(node, visit, seen = new Set()) {
+  /*
+  Recursively visits every ESTree node contained in `node`, invoking `visit`
+  with each one. Cycles are guarded against and non-node properties are ignored.
+  */
+  if (node == null || typeof node !== 'object' || seen.has(node)) {
+    return
+  }
+  seen.add(node)
+  visit(node)
+  for (const key in node) {
+    if (RAW_LITERAL_SKIP_KEYS[key]) {
+      continue
+    }
+    const value = node[key]
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        walk(value[i], visit, seen)
+      }
+    } else if (value != null && typeof value === 'object') {
+      walk(value, visit, seen)
+    }
+  }
+}
+
+function literalIdentity(node) {
+  /*
+  Returns the identity of a `Literal` node, or `null` if it cannot be determined.
+  An identity is `{ kind, value }` for strings, numbers, booleans, null and
+  BigInts, and `{ kind: 'regex', pattern, flags }` for regular expressions.
+  */
+  if (node.regex != null) {
+    return {
+      kind: 'regex',
+      pattern: node.regex.pattern,
+      flags: node.regex.flags,
+    }
+  }
+  if (node.bigint != null) {
+    return { kind: 'bigint', value: BigInt(node.bigint) }
+  }
+  const { value } = node
+  if (value === null) {
+    return { kind: 'null', value: null }
+  }
+  const type = typeof value
+  if (type === 'string') {
+    return { kind: 'string', value }
+  }
+  if (type === 'number') {
+    return { kind: 'number', value }
+  }
+  if (type === 'boolean') {
+    return { kind: 'boolean', value }
+  }
+  if (type === 'bigint') {
+    return { kind: 'bigint', value }
+  }
+  if (value instanceof RegExp) {
+    return { kind: 'regex', pattern: value.source, flags: value.flags }
+  }
+  return null
+}
+
+function literalExpressionIdentity(expression) {
+  /*
+  Returns the identity denoted by a parsed expression, or throws if the
+  expression does not denote exactly one literal. Only `Literal` nodes and
+  unary `+`/`-` expressions applied to a numeric or BigInt literal are
+  accepted; any other expression (identifier, call, binary, template, ...)
+  is rejected.
+  */
+  if (expression == null) {
+    throw new Error('Raw literal must denote a single literal expression')
+  }
+  if (expression.type === 'Literal') {
+    const identity = literalIdentity(expression)
+    if (identity == null) {
+      throw new Error('Raw literal denotes a literal of unknown type')
+    }
+    return identity
+  }
+  if (
+    expression.type === 'UnaryExpression' &&
+    (expression.operator === '+' || expression.operator === '-') &&
+    expression.argument != null &&
+    expression.argument.type === 'Literal'
+  ) {
+    const argumentIdentity = literalIdentity(expression.argument)
+    if (argumentIdentity == null) {
+      throw new Error('Raw literal denotes a unary expression of unknown type')
+    }
+    if (argumentIdentity.kind === 'number') {
+      return {
+        kind: 'number',
+        value:
+          expression.operator === '-'
+            ? -argumentIdentity.value
+            : +argumentIdentity.value,
+      }
+    }
+    if (argumentIdentity.kind === 'bigint') {
+      if (expression.operator === '-') {
+        return { kind: 'bigint', value: -argumentIdentity.value }
+      }
+      // A unary `+` on a BigInt is invalid JavaScript.
+      throw new Error('Raw BigInt literal cannot use a unary plus')
+    }
+    throw new Error(
+      'Raw literal unary sign only applies to numbers and BigInts',
+    )
+  }
+  throw new Error(
+    `Raw literal must denote a single literal expression, got ${expression.type}`,
+  )
+}
+
+function parseRawLiteral(parse, raw) {
+  /*
+  Parses `raw` with the injected `parse` function and returns the identity of
+  the single literal expression it denotes. Throws if `raw` does not parse to
+  exactly one expression statement.
+  */
+  let program
+  try {
+    program = parse(raw)
+  } catch (error) {
+    throw new Error(
+      `Raw literal ${JSON.stringify(raw)} could not be parsed: ${
+        error.message
+      }`,
+    )
+  }
+  if (
+    program == null ||
+    program.body == null ||
+    program.body.length !== 1 ||
+    program.body[0].type !== 'ExpressionStatement'
+  ) {
+    throw new Error(
+      `Raw literal ${JSON.stringify(
+        raw,
+      )} must parse to exactly one expression statement`,
+    )
+  }
+  return literalExpressionIdentity(program.body[0].expression)
+}
+
+function identitiesMatch(declared, parsed) {
+  /*
+  Compares the declared and parsed identities using real identity:
+
+  - strings, booleans and null use strict equality,
+  - numbers use SameValue (`Object.is`), so negative zero is only identical to
+    negative zero and never to positive zero,
+  - BigInts use strict equality,
+  - regular expressions require both pattern and flags to match.
+  */
+  if (declared.kind !== parsed.kind) {
+    return false
+  }
+  switch (declared.kind) {
+    case 'string':
+    case 'boolean':
+    case 'null':
+      return declared.value === parsed.value
+    case 'number':
+      return Object.is(declared.value, parsed.value)
+    case 'bigint':
+      return declared.value === parsed.value
+    case 'regex':
+      return (
+        declared.pattern === parsed.pattern && declared.flags === parsed.flags
+      )
+    default:
+      return false
+  }
+}
+
+function validateRawLiterals(node, parser) {
+  /*
+  Validates every `Literal` node of the provided AST before any code is written.
+  Throws on the first mismatch, leaving the output untouched.
+  */
+  const parse =
+    typeof parser === 'function' ? parser : parser.parse.bind(parser)
+  walk(node, (literal) => {
+    if (literal == null || literal.type !== 'Literal' || literal.raw == null) {
+      return
+    }
+    const declared = literalIdentity(literal)
+    if (declared == null) {
+      throw new Error(
+        `Cannot validate raw literal of unknown type: ${JSON.stringify(
+          literal.raw,
+        )}`,
+      )
+    }
+    const parsed = parseRawLiteral(parse, literal.raw)
+    if (!identitiesMatch(declared, parsed)) {
+      throw new Error(
+        `Raw literal ${JSON.stringify(
+          literal.raw,
+        )} does not match declared value`,
+      )
+    }
+  })
+}
+
 export function generate(node, options) {
   /*
   Returns a string representing the rendered code of the provided AST `node`.
@@ -1217,8 +1451,23 @@ export function generate(node, options) {
   - `output`: output stream to write the rendered code to (defaults to `null`)
   - `generator`: custom code generator (defaults to `GENERATOR`)
   - `expressionsPrecedence`: custom map of node types and their precedence level (defaults to `EXPRESSIONS_PRECEDENCE`)
+  - `strict`: when `true`, every `Literal` node's `raw` property is parsed back
+    and must denote a literal equivalent to the declared `value` (defaults to
+    `false`). Requires `parser` to be set.
+  - `parser`: a parser used to validate raw literals when `strict` is enabled,
+    either a function `parse(code) => Program` or an object with a `parse(code)`
+    method (e.g. `acorn`, `@babel/parser`).
   */
   const state = new State(options)
+  if (state.strict) {
+    if (state.parser == null) {
+      throw new Error(
+        'Strict raw literal policy requires an injected parser (options.parser)',
+      )
+    }
+    // Precheck the whole AST before writing anything to the output.
+    validateRawLiterals(node, state.parser)
+  }
   // Travel through the AST node and generate the code
   state.generator[node.type](node, state)
   return state.output

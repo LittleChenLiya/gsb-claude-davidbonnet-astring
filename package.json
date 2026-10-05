@@ -88,6 +88,7 @@
   "ava": {
     "files": [
       "src/**/tests/astring.js",
+      "src/**/tests/strict-raw.js",
       "src/**/tests/performance.js"
     ],
     "require": [

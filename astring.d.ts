@@ -60,6 +60,26 @@ export interface Options<Output = null> {
    * Custom code generator logic.
    */
   generator?: Generator
+  /**
+   * When `true`, every `Literal` node's `raw` property is parsed back using
+   * `parser` and must denote a literal equivalent to the declared `value`.
+   * No code is ever executed: the comparison is performed on the parsed AST.
+   * Defaults to `false`.
+   */
+  strict?: boolean
+  /**
+   * Parser used to validate raw literals when `strict` is enabled. Either a
+   * function `parse(code) => Program` or an object with a `parse(code)`
+   * method (e.g. `acorn`, `@babel/parser`).
+   */
+  parser?: Parser
+}
+
+/**
+ * Minimal parser interface used by the strict raw literal policy.
+ */
+export interface Parser {
+  parse(code: string): unknown
 }
 
 /**
